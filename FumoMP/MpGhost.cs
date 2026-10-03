@@ -34,6 +34,8 @@ namespace FumoMP
         {
             internal GameObject Go;
             internal Collider Body;             // the one collider left enabled: bumping
+            internal GameObject CharNode;       // hidden for a moment when a weapon lands
+            internal float DamagedUntil;
             internal bool Visible;
             internal Vector3 P0, P1;
             internal Quaternion R0, R1;
@@ -100,6 +102,7 @@ namespace FumoMP
                 }
                 catch { }
                 SetBody(g, false);                              // solid only once it is really there
+                g.CharNode = FindChild(go, "Character");        // hidden while a weapon hit lasts
 
                 BuildNameplate(g, slot);
 
@@ -496,6 +499,14 @@ namespace FumoMP
                     g.T0 = g.T1 = now;
                     g.Go.transform.position = pos;
                     g.Go.transform.rotation = rot;
+
+                    // a weapon hit hides the victim's character on their machine; the
+                    // ghost mirrors it, so the attacker sees the same thing
+                    if (g.CharNode != null)
+                    {
+                        bool want = Time.realtimeSinceStartup >= g.DamagedUntil;
+                        if (g.CharNode.activeSelf != want) g.CharNode.SetActive(want);
+                    }
                     g.Visible = true;
                     SetRenderers(g.Go, true);
                     SetBody(g, true);
@@ -587,6 +598,14 @@ namespace FumoMP
 
                     g.Go.transform.position = pos;
                     g.Go.transform.rotation = rot;
+
+                    // a weapon hit hides the victim's character on their machine; the
+                    // ghost mirrors it, so the attacker sees the same thing
+                    if (g.CharNode != null)
+                    {
+                        bool want = Time.realtimeSinceStartup >= g.DamagedUntil;
+                        if (g.CharNode.activeSelf != want) g.CharNode.SetActive(want);
+                    }
 
                     float quiet = now - g.LastApply;
                     if (quiet > 2.5f && g.Visible)
@@ -724,6 +743,67 @@ namespace FumoMP
                                    + strength.ToString("0.0") + " m/s)");
             }
             catch (Exception e) { Plugin.Log.LogWarning("bump receive: " + e.Message); }
+        }
+
+        // --------------------------------------------------- queries for weapons
+        /// <summary>
+        /// The visible ghost whose body is closest to a point. Used by the weapon layer
+        /// to decide whether a shot reached somebody (and by the bump code, indirectly,
+        /// through the same geometry): the distance is measured to the body collider, so
+        /// height differences do not matter.
+        /// </summary>
+        internal static int NearestTo(Vector3 at, out float gap, out Vector3 pos)
+        {
+            gap = float.MaxValue;
+            pos = Vector3.zero;
+            int best = -1;
+            try
+            {
+                foreach (var kv in Map)
+                {
+                    var g = kv.Value;
+                    if (g.Go == null || !g.Visible) continue;
+                    Vector3 p = g.Go.transform.position;
+                    float d;
+                    if (g.Body != null)
+                    {
+                        try { d = Vector3.Distance(g.Body.ClosestPoint(at), at); }
+                        catch { d = Vector3.Distance(p, at); }
+                    }
+                    else d = Vector3.Distance(p, at);
+                    if (d < gap) { gap = d; pos = p; best = kv.Key; }
+                }
+            }
+            catch { }
+            return best;
+        }
+
+        /// <summary>
+        /// Mirror of what the victim's game does to its own kart when it is hit: the
+        /// game hides the character node for the damage duration. On this machine the
+        /// ghost shows that, so the attacker sees the hit land.
+        /// </summary>
+        internal static void Flash(int slot, float seconds)
+        {
+            try
+            {
+                Ghost g;
+                if (!Map.TryGetValue(slot, out g) || g == null) return;
+                if (g.CharNode == null) g.CharNode = FindChild(g.Go, "Character");
+                g.DamagedUntil = Time.realtimeSinceStartup + Mathf.Clamp(seconds, 0.3f, 5f);
+            }
+            catch { }
+        }
+
+        private static GameObject FindChild(GameObject go, string name)
+        {
+            try
+            {
+                if (go == null) return null;
+                var t = go.transform.Find(name);
+                return t != null ? t.gameObject : null;
+            }
+            catch { return null; }
         }
 
         /// <summary>Harness-only orbit, so a single machine can prove the ghost renders.</summary>

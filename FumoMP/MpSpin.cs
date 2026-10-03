@@ -719,6 +719,13 @@ internal static class MpDamageProbe
 {
     internal static readonly string[] Reason = new string[1];
 
+    /// <summary>
+    /// Set while a weapon hit that arrived over the network is being applied: that
+    /// damage is legitimate (somebody really hit us), so the multiplayer block below
+    /// lets it through instead of skipping the game's reaction.
+    /// </summary>
+    internal static bool NetworkHit;
+
     internal static void TryApply(Harmony harmony)
     {
         int ok = 0;
@@ -831,9 +838,12 @@ internal static class MpDamageProbe
             }
             if (Blocking)
             {
-                sb.Append("\n   -> refused: multiplayer races run without damage (no netcode for it yet)");
+                bool net = NetworkHit;
+                sb.Append(net
+                    ? "\n   -> allowed: this hit came over the network (a weapon), so the game's own reaction runs"
+                    : "\n   -> refused: multiplayer races run without damage (no netcode for it yet)");
                 Plugin.Log.LogWarning(sb.ToString());
-                return false;                      // skip the original: no freeze, no hidden model
+                return net;                        // false = skip the original: no freeze, no hidden model
             }
             Plugin.Log.LogWarning(sb.ToString());
         }

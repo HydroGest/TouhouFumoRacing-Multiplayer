@@ -13,7 +13,7 @@ namespace FumoMP;
 public class Plugin : BasePlugin
 {
     public const string GUID = "dev.fumo.multimod";
-    public const string VERSION = "0.5.0";
+    public const string VERSION = "0.6.0";
 
     internal static new ManualLogSource Log;
 
@@ -35,6 +35,7 @@ public class Plugin : BasePlugin
         TryPatchSceneHooks(harmony);
         MpStartSequencePatch.TryApply(harmony);
         MpVcTracePatch.TryApply(harmony);
+        MpWeapons.TryApply(harmony);
         MpDamageProbe.TryApply(harmony);
         MpFreezeProbe.TryApply(harmony);
         MpAirGuard.TryApply(harmony);

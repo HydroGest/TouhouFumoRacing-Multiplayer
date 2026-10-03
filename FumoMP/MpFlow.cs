@@ -221,6 +221,7 @@ public static class MpFlow
         MpNet.Tick(Time.deltaTime);
         MpRank.Tick(Time.deltaTime);
         MpGhost.Tick(Time.deltaTime);
+        MpWeapons.Tick();
         MpDiag.ModelWatch(Time.deltaTime);
         MpDiag.AnimWatch();
 
@@ -693,6 +694,9 @@ public static class MpFlow
         // Another machine ran into us: it cannot move our kart from there, so it asks
         // us to push ourselves (see MpGhost.Bump).
         MpNet.HitReceived = (fromSlot, dir, strength) => MpGhost.OnHitReceived(fromSlot, dir, strength);
+
+        // Somebody's weapon reached us: run the game's own hit reaction on our kart.
+        MpNet.WeaponHitReceived = (fromSlot, dir, freeze, shove) => MpWeapons.OnWeaponHitReceived(fromSlot, dir, freeze, shove);
     }
 
     /// <summary>Show the result table and give the game a moment, then go to the menu.</summary>

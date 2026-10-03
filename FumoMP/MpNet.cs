@@ -49,12 +49,14 @@ namespace FumoMP
     ///   type 7 hit    20 bytes: [2] sender slot, [3..6] sender client id,
     ///                [7] victim slot, [8..11] push direction x, [12..15] direction z,
     ///                [16..19] push strength (m/s)
+    ///   type 8 weapon 24 bytes: like type 7 plus [20..23] the damage duration (s)
+    ///                the victim's own game should apply
     /// </summary>
     internal static class MpNet
     {
         internal const byte Proto = 5;
-        private const byte TypeKart = 1, TypeHello = 2, TypeStart = 3, TypeEnd = 4, TypePing = 5, TypeInfo = 6, TypeHit = 7;
-        private const int LenKart = 65, LenHello = 42, LenStart = 40, LenEnd = 8, LenPing = 11, LenInfo = 44, LenHit = 20;
+        private const byte TypeKart = 1, TypeHello = 2, TypeStart = 3, TypeEnd = 4, TypePing = 5, TypeInfo = 6, TypeHit = 7, TypeWeapon = 8;
+        private const int LenKart = 65, LenHello = 42, LenStart = 40, LenEnd = 8, LenPing = 11, LenInfo = 44, LenHit = 20, LenWeapon = 24;
         private const byte SlotUnassigned = 255;
         internal const int MaxPlayers = 8;
 
@@ -146,6 +148,9 @@ namespace FumoMP
         /// <summary>Raised when another machine reports that it bumped us
         /// (sender slot, push direction in world x/z, strength in m/s).</summary>
         internal static Action<int, Vector3, float> HitReceived;
+        /// <summary>Raised when another machine's weapon reached us
+        /// (sender slot, push direction, damage duration, extra shove).</summary>
+        internal static Action<int, Vector3, float, float> WeaponHitReceived;
 
         // ---------------------------------------------------------------- setup
         internal static string StartHost(int gamePort)
@@ -419,7 +424,8 @@ namespace FumoMP
                                        + " peers=" + PeerCount + " sent=" + _sent + " recv=" + _recv
                                        + " relayed=" + _relayed + " applied=" + _applied
                                        + " hello=" + _helloSent + " drop=" + _dropped
-                                       + " restarts=" + _restarts + " ghosts=" + MpGhost.Count);
+                                       + " restarts=" + _restarts + " ghosts=" + MpGhost.Count
+                                       + " | " + MpWeapons.Status());
                 }
             }
             catch (Exception e) { Plugin.Log.LogWarning("net tick: " + (e.InnerException ?? e).Message); }
@@ -476,6 +482,7 @@ namespace FumoMP
                         case TypeEnd: OnEnd(pkt); break;
                         case TypeInfo: OnInfo(pkt); break;
                         case TypeHit: OnHit(pkt); break;
+                        case TypeWeapon: OnWeapon(pkt); break;
                         default: _dropped++; break;
                     }
                 }
@@ -653,6 +660,59 @@ namespace FumoMP
 
         /// <summary>Our own slot in this session (the host is always 0).</summary>
         internal static int MySlot { get { return _server ? 0 : _ownSlot; } }
+
+        /// <summary>
+        /// Somebody's weapon reached us, sent by the machine that fired it. The packet
+        /// is addressed to one slot; it travels the same way as a bump (client -> host
+        /// -> relay, or straight from the host) and everyone else ignores it.
+        /// </summary>
+        private static void OnWeapon(byte[] b)
+        {
+            int victim = b[7];
+            if (victim != MySlot) return;
+            int from = b[2];
+            var dir = new Vector3(GetF(b, 8), 0f, GetF(b, 12));
+            float freeze = GetF(b, 16);
+            float shove = GetF(b, 20);
+            if (float.IsNaN(dir.x) || float.IsNaN(dir.z) || float.IsNaN(freeze) || float.IsNaN(shove)) { _dropped++; return; }
+            if (freeze < 0f || freeze > 10f || shove < 0f || shove > 60f) { _dropped++; return; }
+            var h = WeaponHitReceived;
+            if (h != null) { try { h(from, dir, freeze, shove); } catch (Exception e) { Plugin.Log.LogWarning("net: weapon handler: " + e.Message); } }
+        }
+
+        /// <summary>Tell the player in <paramref name="victimSlot"/> that our weapon hit them.</summary>
+        internal static void SendWeaponHit(int victimSlot, Vector3 dir, float freeze, float shove)
+        {
+            try
+            {
+                if (!_running || _sock == null) return;
+                if (victimSlot < 0 || victimSlot >= MaxPlayers || victimSlot == MySlot) return;
+                float len = Mathf.Sqrt(dir.x * dir.x + dir.z * dir.z);
+                var b = new byte[LenWeapon];
+                b[0] = TypeWeapon; b[1] = Proto; b[2] = (byte)MySlot;
+                PutU(b, 3, _clientId);
+                b[7] = (byte)victimSlot;
+                PutF(b, 8, len > 0.0001f ? dir.x / len : 0f);
+                PutF(b, 12, len > 0.0001f ? dir.z / len : 0f);
+                PutF(b, 16, Mathf.Clamp(freeze, 0f, 10f));
+                PutF(b, 20, Mathf.Clamp(shove, 0f, 40f));
+
+                if (_server)
+                {
+                    var p = FindPeer(victimSlot);
+                    if (p == null || p.Endpoint == null) return;
+                    _sock.SendTo(b, p.Endpoint);
+                }
+                else
+                {
+                    var host = _hostEp;
+                    if (host == null) return;
+                    _sock.SendTo(b, host);
+                }
+                _sent++;
+            }
+            catch (Exception e) { Plugin.Log.LogWarning("net: send weapon: " + e.Message); }
+        }
 
         /// <summary>Tell the player in <paramref name="victimSlot"/> to push their kart.</summary>
         internal static void SendHit(int victimSlot, Vector3 dir, float strength)
