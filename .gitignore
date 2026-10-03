@@ -1,0 +1,25 @@
+# --- the game itself: never commit it, and never commit anything extracted from it ---
+/Touhou Fumo Racing 021 (2)/
+
+# --- reverse-engineering workspace (Il2CppDumper output, Ghidra, symbol dumps, probes) ---
+/_fumo_probe/
+/tools/
+
+# --- packaging staging (contains a full copy of BepInEx + runtime) ---
+/_pkg/
+/FumoMP/replace-dll-only/
+
+# --- build output ---
+FumoMP/bin/
+FumoMP/obj/
+
+# --- release archives: attached to GitHub releases, not committed ---
+/FumoMP/*.zip
+
+# --- editor / OS / log noise ---
+.vs/
+.idea/
+*.user
+*.log
+Thumbs.db
+desktop.ini
