@@ -33,6 +33,7 @@ namespace FumoMP
         private class Ghost
         {
             internal GameObject Go;
+            internal Collider Body;             // the one collider left enabled: bumping
             internal bool Visible;
             internal Vector3 P0, P1;
             internal Quaternion R0, R1;
@@ -92,6 +93,14 @@ namespace FumoMP
                 Map[slot] = g;
                 SetRenderers(go, false);                        // invisible until real data arrives
 
+                try
+                {
+                    foreach (var c in go.GetComponentsInChildren<Collider>(true))
+                        if (c != null && c.enabled && !c.isTrigger) { g.Body = c; break; }
+                }
+                catch { }
+                SetBody(g, false);                              // solid only once it is really there
+
                 BuildNameplate(g, slot);
 
                 int renderers = 0;
@@ -109,25 +118,48 @@ namespace FumoMP
         }
 
         /// <summary>
-        /// Take the game logic off the clone: vehicle physics, racer/lap state,
-        /// input controller, health, items. What is left is the visible kart.
+        /// Take the game logic off the clone: racer/lap state, input controller,
+        /// health, items. What is left is the visible kart - plus two deliberate
+        /// exceptions, both of them for bumping:
+        ///
+        ///   * VehicleCharacter stays on the object but switched off. Its Update would
+        ///     drive the ghost, so it must not run - but the game's own kart-vs-kart
+        ///     response (VehicleCharacter.OnControllerColliderHit) looks the component
+        ///     up on whatever it collided with, so a ghost needs one to be a valid
+        ///     crash partner.
+        ///   * one collider stays enabled: the kart body. Without it the two karts
+        ///     simply drive through each other, which is what 0.4.x did.
         /// </summary>
         private static int Strip(GameObject go)
         {
             int removed = 0;
             try
             {
-                removed += Kill(go, "VehicleCharacter");
                 removed += Kill(go, "PlayerRacer");
                 removed += Kill(go, "PlayerRacingController");
                 removed += Kill(go, "HealthComponent");
                 removed += Kill(go, "PlayerItems");
+                removed += Disable(go, "VehicleCharacter");
                 try
                 {
-                    foreach (var c in go.GetComponentsInChildren<Collider>(true))
-                        if (c != null) { c.enabled = false; removed++; }
+                    var all = go.GetComponentsInChildren<Collider>(true);
+                    var keep = PickBody(all);
+                    foreach (var c in all)
+                    {
+                        if (c == null || c == keep) continue;
+                        if (c.enabled) { c.enabled = false; removed++; }
+                    }
+                    if (keep != null)
+                    {
+                        keep.enabled = true;
+                        try { keep.isTrigger = false; } catch { }
+                        Plugin.Log.LogInfo("ghost: body collider '" + MpDiag.PathOf(keep.transform) + "' "
+                                           + keep.GetType().Name + " size=" + FmtVec(keep.bounds.size)
+                                           + " -> bumping is possible (FumoMP.nobump disables the shove)");
+                    }
+                    else Plugin.Log.LogWarning("ghost: no collider found - karts will drive through ghosts");
                 }
-                catch { }
+                catch (Exception e) { Plugin.Log.LogWarning("ghost: colliders: " + e.Message); }
                 try
                 {
                     foreach (var cam in go.GetComponentsInChildren<Camera>(true))
@@ -137,6 +169,63 @@ namespace FumoMP
             }
             catch (Exception e) { Plugin.Log.LogWarning("ghost: strip: " + e.Message); }
             return removed;
+        }
+
+        /// <summary>
+        /// The collider that represents the kart body. A CharacterController is the
+        /// best candidate (it is the shape the vehicle actually moves with), then the
+        /// biggest box/capsule - the kart has several small ones for its effects and
+        /// item pickups.
+        /// </summary>
+        private static Collider PickBody(Collider[] all)
+        {
+            Collider best = null;
+            float bestScore = -1f;
+            try
+            {
+                foreach (var c in all)
+                {
+                    if (c == null) continue;
+                    if (c.isTrigger) continue;
+                    float score;
+                    var cc = c as CharacterController;
+                    if (cc != null) score = 1000f + cc.height * cc.radius;
+                    else
+                    {
+                        Vector3 s = c.bounds.size;
+                        score = s.x * s.y * s.z;
+                    }
+                    if (score > bestScore) { bestScore = score; best = c; }
+                }
+            }
+            catch { }
+            return best;
+        }
+
+        private static string FmtVec(Vector3 v)
+        {
+            return v.x.ToString("0.0") + "x" + v.y.ToString("0.0") + "x" + v.z.ToString("0.0");
+        }
+
+        /// <summary>Switch a component off (it stays findable by GetComponent).</summary>
+        private static int Disable(GameObject go, string typeName)
+        {
+            int n = 0;
+            try
+            {
+                var t = HarmonyLib.AccessTools.TypeByName(typeName);
+                if (t == null) return 0;
+                var it = Il2CppInterop.Runtime.Il2CppType.From(t);
+                if (it == null) return 0;
+                foreach (var c in go.GetComponentsInChildren(it, true))
+                {
+                    if (c == null) continue;
+                    var b = c as Behaviour;
+                    if (b != null && b.enabled) { b.enabled = false; n++; }
+                }
+            }
+            catch { }
+            return n;
         }
 
         private static int Kill(GameObject go, string typeName)
@@ -157,6 +246,16 @@ namespace FumoMP
             }
             catch { }
             return n;
+        }
+
+        /// <summary>
+        /// The body collider follows visibility: a ghost with no data yet (or one that
+        /// went quiet) must not be a solid obstacle sitting on the start line, and it
+        /// must not trip track triggers either.
+        /// </summary>
+        private static void SetBody(Ghost g, bool on)
+        {
+            try { if (g != null && g.Body != null) g.Body.enabled = on; } catch { }
         }
 
         private static void SetRenderers(GameObject go, bool on)
@@ -399,6 +498,7 @@ namespace FumoMP
                     g.Go.transform.rotation = rot;
                     g.Visible = true;
                     SetRenderers(g.Go, true);
+                    SetBody(g, true);
                     Plugin.Log.LogInfo("ghost: slot " + slot + " visible at " + Fmt(pos)
                                        + " (first packet, " + Map.Count + " ghost(s) in the session)");
                 }
@@ -496,12 +596,14 @@ namespace FumoMP
                         // back on the next packet
                         g.Visible = false;
                         SetRenderers(g.Go, false);
+                        SetBody(g, false);
                         Plugin.Log.LogInfo("ghost: slot " + kv.Key + " hidden after " + quiet.ToString("F1") + "s of silence");
                     }
                     if (quiet > 25f) (stale ?? (stale = new List<int>())).Add(kv.Key);
                 }
 
                 UpdateNameplates();
+                Bump();
 
                 if (stale != null)
                     foreach (var slot in stale)
@@ -514,6 +616,114 @@ namespace FumoMP
                     }
             }
             catch (Exception e) { Plugin.Log.LogWarning("ghost tick: " + e.Message); }
+        }
+
+        // ------------------------------------------------------------ kart vs kart
+        // Two karts cannot bump each other over the network on their own: on the
+        // other machine we are a ghost driven by packets, with no physics at all, so
+        // it can never push anybody. The fix is symmetric and split in two halves:
+        //
+        //   * a ghost keeps one collider, so the local CharacterController is blocked
+        //     by it - you cannot drive through another player any more, which is what
+        //     makes the contact exist in the first place;
+        //   * the machine that feels the contact adds force to its own kart (the game's
+        //     own VehicleCharacter.AddForce) and sends a hit packet, so the other
+        //     machine pushes *its* kart the same way. Both players get knocked back,
+        //     each machine only ever touches its own vehicle.
+        private static readonly float[] _bumpAt = new float[MpNet.MaxPlayers];
+        private static float _nextBumpLog;
+
+        private const float ContactGap = 1.1f;      // metres between the two bodies
+        private const float MinClosing = 6f;        // m/s of closing speed for a real hit
+
+        private static bool BumpDisabled
+        {
+            get
+            {
+                try { return System.IO.File.Exists(System.IO.Path.Combine(BepInEx.Paths.PluginPath, "FumoMP.nobump")); }
+                catch { return false; }
+            }
+        }
+
+        internal static void Bump()
+        {
+            try
+            {
+                if (BumpDisabled) return;
+                var local = MpDiag.LocalRacer();
+                if (local == null) return;
+                var vc = local.vc;
+                if (vc == null) return;                       // no local kart yet
+                var ltr = (vc as Component) != null ? (vc as Component).transform : local.transform;
+                if (ltr == null) return;
+
+                Vector3 lp = ltr.position;
+                Vector3 vel;
+                try { vel = vc.velocity; } catch { vel = Vector3.zero; }
+                vel.y = 0f;
+                if (vel.sqrMagnitude < 25f) return;           // slower than 5 m/s: not a hit
+                float now = Time.realtimeSinceStartup;
+
+                foreach (var kv in Map)
+                {
+                    int slot = kv.Key;
+                    var g = kv.Value;
+                    if (g.Go == null || !g.Visible) continue;
+                    if (slot < 0 || slot >= _bumpAt.Length) continue;
+
+                    Vector3 gp = g.Go.transform.position;
+                    Vector3 toGhost = gp - lp;
+                    toGhost.y = 0f;
+                    float gap = toGhost.magnitude;
+                    if (gap < 0.05f || gap > 6f) continue;
+                    if (g.Body != null)
+                    {
+                        try
+                        {
+                            Vector3 cp = g.Body.ClosestPoint(lp);
+                            Vector3 d = cp - lp; d.y = 0f;
+                            gap = d.magnitude;                // 0 while the bodies overlap
+                        }
+                        catch { }
+                    }
+                    if (gap > ContactGap) continue;
+
+                    Vector3 dir = toGhost.normalized;
+                    float closing = Vector3.Dot(vel, dir);
+                    if (closing < MinClosing) continue;        // rubbing, not crashing
+                    if (now - _bumpAt[slot] < 0.5f) continue;
+                    _bumpAt[slot] = now;
+
+                    float strength = Mathf.Clamp(closing * 0.55f, 5f, 22f);
+                    try { vc.AddForce(-dir * strength * 0.7f, 45f); } catch { }   // push ourselves off
+                    MpNet.SendHit(slot, dir, strength);                          // and ask them to move
+                    if (now - _nextBumpLog > 0.5f)
+                    {
+                        _nextBumpLog = now;
+                        Plugin.Log.LogInfo("bump: hit slot " + slot + " (gap " + gap.ToString("0.00")
+                                           + "m, closing " + closing.ToString("0.0") + " m/s, shove "
+                                           + strength.ToString("0.0") + ") - game crash="
+                                           + MpDiag.Fnum(vc, "_crashT") + "/" + MpDiag.Fnum(vc, "_crashMaxRate"));
+                    }
+                }
+            }
+            catch (Exception e) { Plugin.Log.LogWarning("bump: " + e.Message); }
+        }
+
+        /// <summary>Another machine reports that it ran into us: shove our own kart.</summary>
+        internal static void OnHitReceived(int fromSlot, Vector3 dir, float strength)
+        {
+            try
+            {
+                if (BumpDisabled) return;
+                var local = MpDiag.LocalRacer();
+                var vc = local != null ? local.vc : null;
+                if (vc == null) return;
+                vc.AddForce(dir * strength, 60f);
+                Plugin.Log.LogInfo("bump: shoved by slot " + fromSlot + " (force "
+                                   + strength.ToString("0.0") + " m/s)");
+            }
+            catch (Exception e) { Plugin.Log.LogWarning("bump receive: " + e.Message); }
         }
 
         /// <summary>Harness-only orbit, so a single machine can prove the ghost renders.</summary>
@@ -533,6 +743,7 @@ namespace FumoMP
                     var look = lp - want; look.y = 0f;
                     g.Visible = true;
                     SetRenderers(g.Go, true);
+                    SetBody(g, true);
                     g.Go.transform.position = want;
                     if (look.sqrMagnitude > 0.01f) g.Go.transform.rotation = Quaternion.LookRotation(look.normalized, Vector3.up);
                     g.LastApply = Time.realtimeSinceStartup;

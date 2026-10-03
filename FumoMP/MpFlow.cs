@@ -689,6 +689,10 @@ public static class MpFlow
             Plugin.Log.LogInfo("net: host ended the race - showing the results");
             EndRaceEverywhere("the host finished the race");
         };
+
+        // Another machine ran into us: it cannot move our kart from there, so it asks
+        // us to push ourselves (see MpGhost.Bump).
+        MpNet.HitReceived = (fromSlot, dir, strength) => MpGhost.OnHitReceived(fromSlot, dir, strength);
     }
 
     /// <summary>Show the result table and give the game a moment, then go to the menu.</summary>

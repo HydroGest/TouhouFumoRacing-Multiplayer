@@ -13,7 +13,7 @@ namespace FumoMP;
 public class Plugin : BasePlugin
 {
     public const string GUID = "dev.fumo.multimod";
-    public const string VERSION = "0.4.2";
+    public const string VERSION = "0.5.0";
 
     internal static new ManualLogSource Log;
 

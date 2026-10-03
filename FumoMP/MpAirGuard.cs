@@ -216,6 +216,11 @@ namespace FumoMP
                 bool found = false;
                 try { found = Physics.Raycast(origin, Vector3.down, out hit, 4f); } catch { found = false; }
 
+                // Another player's kart is solid now (it has a collider so karts can
+                // bump), and it must never be mistaken for the ground: driving over a
+                // ghost would otherwise "level" the kart onto it.
+                if (found && IsGhostCollider(hit.collider)) found = false;
+
                 // no ground under it: genuinely flying, leave it alone
                 if (!found || hit.distance > 2.6f) { TiltSince.Remove(id); return; }
 
@@ -247,6 +252,23 @@ namespace FumoMP
 
         private static readonly Dictionary<IntPtr, float> TiltSince = new Dictionary<IntPtr, float>();
         private static readonly List<IntPtr> _levelLogged = new List<IntPtr>();
+
+        /// <summary>Is this collider part of one of our ghost karts?</summary>
+        private static bool IsGhostCollider(Collider c)
+        {
+            try
+            {
+                var t = c != null ? c.transform : null;
+                for (int i = 0; i < 6 && t != null; i++)
+                {
+                    string n = t.name;
+                    if (!string.IsNullOrEmpty(n) && n.StartsWith("FumoMP_Ghost")) return true;
+                    t = t.parent;
+                }
+            }
+            catch { }
+            return false;
+        }
 
         private static bool InRace
         {

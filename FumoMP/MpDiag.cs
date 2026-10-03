@@ -3376,7 +3376,7 @@ internal static class MpDiag
         return false;
     }
 
-    private static string PathOf(Transform t)
+    internal static string PathOf(Transform t)
     {
         try
         {

@@ -17,7 +17,8 @@ The ready-to-play build is attached to the [releases](../../releases) page.
 |---|---|
 | Game build targeted | *Touhou Fumo Racing 021* (the `0.2.1` build — Unity 2022.1.23f1, IL2CPP x64, Windows) |
 | Plugin loader | BepInEx 6.0.0-be.788 (IL2CPP) + HarmonyX |
-| Current version | `0.4.2` — published as a **pre-release**, see below |
+| Current version | `0.5.0` — published as a **pre-release**, see below |
+| Wire protocol | must match on every machine (0.4.x and 0.5.0 cannot talk to each other) |
 | Players per room | up to 8 (protocol limit); developed and tested with 2 |
 
 ### What is verified
@@ -36,9 +37,11 @@ joining, both driven by automated input at ~3 fps software rendering):
 
 ### What is *not* verified
 
-* **Version 0.4.2 has not been run at all.** It is a code-only fix for one bug found in a
-  player log (the plugin's own results panel was hidden by its own end-screen cleaner,
-  which made it flash by). Treat this build as a candidate, not as confirmed.
+* **Version 0.5.0 has not been run at all.** It adds kart-vs-kart collision and the
+  networked shove; both are reasoning-and-decompilation work, not measured behaviour.
+* Version 0.4.2 was also never run: it is a code-only fix for one bug found in a player
+  log (the plugin's own results panel was hidden by its own end-screen cleaner, which made
+  it flash by).
 * Second race without restarting the game (added in 0.4.1) — implemented, untested.
 * Anything beyond LAN / same-machine: internet play is expected to work over a VPN such as
   Tailscale, but has not been tested. There is no NAT punch-through and no relay server.
@@ -46,7 +49,15 @@ joining, both driven by automated input at ~3 fps software rendering):
 
 ### Known limitations
 
-* **No kart-vs-kart collision.** Ghost karts are visual: they cannot push, bump or damage you.
+* **Attacks do nothing in multiplayer.** Two independent reasons: the plugin refuses every
+  `HealthComponent.TakeDamage` during a race (there is no netcode for damage yet), and the
+  game's own attacks are collider-driven and ask the thing they collided with whether it is
+  a racer (`LagHitboxManager.CheckCollision(PlayerRacer, Collider)` — the check is a
+  `GetComponent` on the hit collider). Ghost karts have no racer component, so a hit is
+  never even detected. Plan: decide the hit on the attacker's machine, send a hit packet,
+  and let the victim's machine run the game's own damage effect on its own kart.
+* **Bumping is new and unmeasured (0.5.0).** Karts are blocked by each other and both sides
+  get a shove, but the strength values are guesses; `FumoMP.nobump` turns the shove off.
 * **Lap and position counting is local to each machine.** The game's own `FRNetworkRacer`
   does sync lap/checkpoint/damage, but this build's race prefabs carry no `NetworkIdentity`,
   so that path is unused. Only the *display* of the standings is shared, not the results.
@@ -165,6 +176,13 @@ Everything else the game gets wrong in multiplayer is patched:
   that frame, `VehicleCharacter.Freeze()` no longer snaps the kart to its velocity direction,
   and if the game *thinks* you are airborne while a raycast says there is ground right under
   you and the kart is tilted, it is levelled back out against the surface normal.
+* `MpGhost.cs` also owns **kart-vs-kart bumping**. A ghost keeps one body collider, so the
+  local `CharacterController` is blocked by it, and a ghost keeps a *disabled*
+  `VehicleCharacter` because the game's own crash response looks that component up on
+  whatever it hit. Since a ghost cannot push anybody (on the other machine we are the
+  ghost), the machine that feels the contact calls the game's own
+  `VehicleCharacter.AddForce` on **its own** kart and sends a `hit` packet, so the other
+  machine pushes its own kart the same way — each machine only ever moves its own vehicle.
 * `MpFlow.cs` — race lifecycle: follow the host's start, broadcast the start to peers, run the
   race, and after the finish show **our own results panel** (the game's is empty because nothing
   dismisses it). It also resets the stale `inRace`/`endedRace` flags once you are back in a menu
@@ -212,11 +230,16 @@ Create an empty file in `<game>/BepInEx/plugins/` with one of these names:
 | `FumoMP.nettest` | run the channel's own encode/send/relay/decode self-test |
 | `FumoMP.forceend` | force the end-of-race chain a while into a race |
 | `FumoMP.trick` | keep the original airborne tricks (disable the air guard) |
+| `FumoMP.nobump` | keep the ghost colliders but do not shove anybody (bump tuning) |
 
 ---
 
 ## Version history
 
+* **0.5.0** — kart-vs-kart collision: ghosts keep one body collider (you can no longer drive
+  through another player) and a new `hit` packet pushes both karts apart using the game's own
+  `AddForce`. Protocol raised to 5, so **all machines must run the same version**.
+  *Code only, not verified.*
 * **0.4.2** — fix: the plugin's own results panel was matched by the end-screen cleaner
   (its leaves are named `Results`/`ResultsBackBtn`) and switched off right after it appeared,
   so the results flashed by. The "is this ours?" test now walks the whole ancestor chain, and a

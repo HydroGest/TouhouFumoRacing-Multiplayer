@@ -46,12 +46,15 @@ namespace FumoMP
     ///   type 5 ping   11 bytes: [7..10] sender timestamp (float)
     ///   type 6 info   44 bytes: [7] character, [8] skin, [9] vehicle,
     ///                [10..11] ping ms, [12..43] nickname
+    ///   type 7 hit    20 bytes: [2] sender slot, [3..6] sender client id,
+    ///                [7] victim slot, [8..11] push direction x, [12..15] direction z,
+    ///                [16..19] push strength (m/s)
     /// </summary>
     internal static class MpNet
     {
-        internal const byte Proto = 4;
-        private const byte TypeKart = 1, TypeHello = 2, TypeStart = 3, TypeEnd = 4, TypePing = 5, TypeInfo = 6;
-        private const int LenKart = 65, LenHello = 42, LenStart = 40, LenEnd = 8, LenPing = 11, LenInfo = 44;
+        internal const byte Proto = 5;
+        private const byte TypeKart = 1, TypeHello = 2, TypeStart = 3, TypeEnd = 4, TypePing = 5, TypeInfo = 6, TypeHit = 7;
+        private const int LenKart = 65, LenHello = 42, LenStart = 40, LenEnd = 8, LenPing = 11, LenInfo = 44, LenHit = 20;
         private const byte SlotUnassigned = 255;
         internal const int MaxPlayers = 8;
 
@@ -140,6 +143,9 @@ namespace FumoMP
         internal static Action<string, int, int> RaceStartReceived;
         /// <summary>Raised when the host ends the race or leaves (reason 0/1).</summary>
         internal static Action<int> RaceEndReceived;
+        /// <summary>Raised when another machine reports that it bumped us
+        /// (sender slot, push direction in world x/z, strength in m/s).</summary>
+        internal static Action<int, Vector3, float> HitReceived;
 
         // ---------------------------------------------------------------- setup
         internal static string StartHost(int gamePort)
@@ -469,6 +475,7 @@ namespace FumoMP
                         case TypeStart: OnStart(pkt); break;
                         case TypeEnd: OnEnd(pkt); break;
                         case TypeInfo: OnInfo(pkt); break;
+                        case TypeHit: OnHit(pkt); break;
                         default: _dropped++; break;
                     }
                 }
@@ -621,6 +628,66 @@ namespace FumoMP
                 foreach (var p in PeerList) if (p.Slot == slot) return p;
             }
             return null;
+        }
+
+        /// <summary>
+        /// A kart bump. Two karts cannot push each other over the network by
+        /// themselves - on the other machine we are only a ghost, which is driven by
+        /// packets and has no physics - so the machine that feels the hit tells the
+        /// other machine to shove its own kart. The packet carries the direction (in
+        /// world space, x/z) and the strength in m/s; the receiver adds it to its own
+        /// vehicle with the game's own VehicleCharacter.AddForce.
+        /// </summary>
+        private static void OnHit(byte[] b)
+        {
+            int victim = b[7];
+            if (victim != MySlot) return;                       // not addressed to us
+            int from = b[2];
+            var dir = new Vector3(GetF(b, 8), 0f, GetF(b, 12));
+            float strength = GetF(b, 16);
+            if (float.IsNaN(dir.x) || float.IsNaN(dir.z) || float.IsNaN(strength)) { _dropped++; return; }
+            if (strength <= 0f || strength > 60f) { _dropped++; return; }
+            var h = HitReceived;
+            if (h != null) { try { h(from, dir, strength); } catch (Exception e) { Plugin.Log.LogWarning("net: hit handler: " + e.Message); } }
+        }
+
+        /// <summary>Our own slot in this session (the host is always 0).</summary>
+        internal static int MySlot { get { return _server ? 0 : _ownSlot; } }
+
+        /// <summary>Tell the player in <paramref name="victimSlot"/> to push their kart.</summary>
+        internal static void SendHit(int victimSlot, Vector3 dir, float strength)
+        {
+            try
+            {
+                if (!_running || _sock == null) return;
+                if (victimSlot < 0 || victimSlot >= MaxPlayers || victimSlot == MySlot) return;
+                float len = Mathf.Sqrt(dir.x * dir.x + dir.z * dir.z);
+                if (len < 0.0001f) return;
+                var b = new byte[LenHit];
+                b[0] = TypeHit; b[1] = Proto; b[2] = (byte)MySlot;
+                PutU(b, 3, _clientId);
+                b[7] = (byte)victimSlot;
+                PutF(b, 8, dir.x / len);
+                PutF(b, 12, dir.z / len);
+                PutF(b, 16, Mathf.Clamp(strength, 1f, 40f));
+
+                if (_server)
+                {
+                    // the host is not in its own relay path, so it sends the packet
+                    // itself; a client's hit arrives through the normal relay
+                    var p = FindPeer(victimSlot);
+                    if (p == null || p.Endpoint == null) return;
+                    _sock.SendTo(b, p.Endpoint);
+                }
+                else
+                {
+                    var host = _hostEp;
+                    if (host == null) return;
+                    _sock.SendTo(b, host);
+                }
+                _sent++;
+            }
+            catch (Exception e) { Plugin.Log.LogWarning("net: send hit: " + e.Message); }
         }
 
         // -------------------------------------------------------------- sending
